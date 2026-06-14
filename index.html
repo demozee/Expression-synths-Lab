@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="浏览器端深度视频粒子效果生成与在线预览工具。" />
+    <title>深度粒子实验室</title>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="./src/styles.css?v=20260614-upload-motion-fix" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="control-panel" aria-label="深度粒子工具栏">
+        <div class="brand-row">
+          <img class="brand-logo" src="./assets/synths-logo.svg" alt="synths Lab" />
+        </div>
+
+        <section class="source-module" aria-label="素材上传">
+          <div class="media-slots" aria-label="素材列表">
+            <button id="slotDeleteButton" class="slot-delete" type="button" title="删除当前素材" aria-label="删除当前素材" hidden>
+              <span aria-hidden="true"></span>
+            </button>
+            <button class="slot-button is-active" data-slot="a" type="button"><span>1</span></button>
+            <button class="slot-button" data-slot="b" type="button"><span>2</span></button>
+            <button class="slot-button" data-slot="3" type="button"><span>3</span></button>
+            <button class="slot-button" data-slot="4" type="button"><span>4</span></button>
+            <button class="slot-button" data-slot="5" type="button"><span>5</span></button>
+            <button class="slot-button slot-add" data-slot="add" type="button" title="新增素材"><span>+</span></button>
+            <strong id="sourceBadge" class="slot-count"><span class="slot-current">0</span><span class="slot-total">/5</span></strong>
+          </div>
+
+          <input id="videoInput" class="native-file-input" type="file" accept="video/*,image/*" />
+          <input id="clipAInput" class="native-file-input" type="file" accept="video/*,image/*" />
+          <input id="clipBInput" class="native-file-input" type="file" accept="video/*,image/*" />
+
+          <label class="file-drop" for="videoInput">
+            <canvas id="sourcePreview" width="320" height="180"></canvas>
+            <span class="drop-caret" aria-hidden="true"></span>
+            <span class="drop-ui">
+              <span class="drawn-icon drawn-upload" aria-hidden="true"></span>
+              <strong>input</strong>
+              <small id="fileLabel">点击上传 or 拖进页面</small>
+            </span>
+          </label>
+
+          <p id="uploadStatus" class="upload-status">支持 PNG/JPG/WebP<br />支持 MP4、MOV、WebM 视频</p>
+          <p id="sequenceStatus" class="upload-status technical-hidden">上传两段视频后自动启用衔接时间线</p>
+          <span id="clipALabel" class="technical-hidden">未选择</span>
+          <span id="clipBLabel" class="technical-hidden">未选择</span>
+        </section>
+
+        <section class="control-section depth-section">
+          <h2>深度效果</h2>
+          <figure class="side-preview depth-preview">
+            <canvas id="depthPreview" width="320" height="180"></canvas>
+          </figure>
+          <label class="field">
+            <span>纵深感</span>
+            <input id="depthStrength" type="range" min="0" max="10" step="1" value="0" />
+            <output id="depthStrengthOut">0</output>
+          </label>
+          <span id="depthStatus" class="status-dot technical-hidden">实时</span>
+        </section>
+
+        <section class="control-section particle-section">
+          <h2>粒子效果</h2>
+
+          <div class="particle-color-control" aria-label="粒子颜色和背景颜色">
+            <span class="color-title color-title-particle">粒子</span>
+            <button class="color-choice particle-choice is-active" data-particle-color="white" type="button">white</button>
+            <button class="color-choice particle-choice color-original" data-particle-color="original" type="button">Original</button>
+            <button class="color-choice particle-choice color-black" data-particle-color="black" type="button">black</button>
+
+            <div class="particle-orb" id="particleOrb" aria-hidden="true">
+              <span class="orb-value"><b id="orbCountMain"></b><em id="orbCountUnit"></em></span>
+              <div id="particleColorPreview" class="orb-points"></div>
+            </div>
+
+            <button class="color-choice bg-choice bg-white" data-bg-color="white" type="button">white</button>
+            <button class="color-choice bg-choice color-alpha" data-bg-color="alpha" type="button">alpha</button>
+            <button class="color-choice bg-choice bg-black is-active" data-bg-color="black" type="button">black</button>
+            <span class="color-title color-title-background">背景</span>
+          </div>
+
+          <label class="field">
+            <span>数量</span>
+            <input id="density" type="range" min="0" max="10" step="1" value="0" />
+            <output id="densityOut">0</output>
+          </label>
+
+          <label class="field">
+            <span>大小</span>
+            <input id="pointSize" type="range" min="0" max="10" step="1" value="0" />
+            <output id="pointSizeOut">0</output>
+          </label>
+
+          <label class="field">
+            <span>随机大小</span>
+            <input id="sizeRandomness" type="range" min="0" max="10" step="1" value="0" />
+            <output id="sizeRandomnessOut">0</output>
+          </label>
+
+          <label class="field">
+            <span>随机透明度</span>
+            <input id="particleOpacity" type="range" min="0" max="10" step="1" value="0" />
+            <output id="particleOpacityOut">0</output>
+          </label>
+
+          <label class="field">
+            <span>镜头模糊</span>
+            <input id="particleLook" type="range" min="0" max="10" step="1" value="0" />
+            <output id="particleLookOut">0</output>
+          </label>
+
+          <span id="particleCount" class="technical-hidden">10万</span>
+        </section>
+
+        <div class="technical-hidden" aria-hidden="true">
+          <select id="depthRecipe"><option value="balanced" selected>均衡</option></select>
+          <input id="threshold" type="range" min="0" max="0.65" step="0.01" value="0.14" />
+          <output id="thresholdOut">0.14</output>
+          <input id="depthContrast" type="range" min="0.35" max="3.2" step="0.01" value="1" />
+          <output id="depthContrastOut">1.00</output>
+          <input id="edgeLift" type="range" min="0" max="1.6" step="0.01" value="0.62" />
+          <output id="edgeLiftOut">0.62</output>
+          <input id="invertDepth" type="checkbox" />
+          <input id="depthLook" type="range" min="0" max="1" step="0.01" value="0.44" />
+          <output id="depthLookOut">0.44</output>
+          <input id="depthGamma" type="range" min="0.35" max="2.4" step="0.01" value="0.58" />
+          <output id="depthGammaOut">0.58</output>
+          <input id="flowLook" type="range" min="0" max="1" step="0.01" value="0.52" />
+          <output id="flowLookOut">0.52</output>
+          <input id="motion" type="range" min="0" max="1.4" step="0.01" value="0" disabled />
+          <output id="motionOut">0.00</output>
+          <input id="colorMix" type="range" min="0" max="1" step="0.01" value="0" disabled />
+          <output id="colorMixOut">0.00</output>
+          <input id="sourcePull" type="range" min="0" max="1" step="0.01" value="1" />
+          <output id="sourcePullOut">1.00</output>
+          <input id="assembleDuration" type="range" min="0" max="4" step="0.05" value="1.6" />
+          <output id="assembleDurationOut">1.60</output>
+          <input id="dissolveDuration" type="range" min="0" max="4" step="0.05" value="1.6" />
+          <output id="dissolveDurationOut">1.60</output>
+          <input id="transitionDuration" type="range" min="0" max="8" step="0.05" value="1.4" />
+          <output id="transitionDurationOut">1.40</output>
+          <input id="exportAlpha" type="checkbox" />
+          <input type="radio" name="exportBackground" value="white" />
+          <input type="radio" name="exportBackground" value="black" checked />
+          <button id="exportDepthButton" type="button"><span>导出深度 WebM</span></button>
+          <a id="downloadLink" download="depth-map.webm"><span>就绪</span></a>
+        </div>
+      </aside>
+
+      <section class="stage-area" aria-label="在线效果预览">
+        <canvas id="webglCanvas"></canvas>
+        <label class="stage-upload" for="videoInput">
+          <span class="drawn-icon drawn-upload small" aria-hidden="true"></span>
+          <span>上传媒体</span>
+          <small>图片或视频都可以拖入</small>
+        </label>
+
+        <label id="emptyState" class="empty-state" for="videoInput">
+          <span class="drawn-icon drawn-upload-cloud" aria-hidden="true"></span>
+          <strong>上传图片或视频生成深度粒子效果</strong>
+          <span>图片会生成正面视角粒子图；视频会逐帧生成深度粒子预览。文件可直接拖到这个区域。</span>
+        </label>
+
+        <div class="stage-topbar">
+          <div class="preview-heading">
+            <span>在线实时预览</span>
+            <small>WebGL 深度粒子效果</small>
+          </div>
+          <div class="meter-group">
+            <div class="meter">
+              <span class="meter-label">WebGL</span>
+              <span id="fpsMeter">-- 帧/秒</span>
+            </div>
+            <div class="meter">
+              <span class="meter-label">深度</span>
+              <span id="depthMeter">320 x 180</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="runtimeMessage" class="runtime-message" hidden></div>
+
+        <div class="playback-banner" aria-label="播放控制">
+          <button id="playButton" class="icon-button" type="button" title="播放 / 暂停" data-icon="play">
+            <span class="play-glyph" aria-hidden="true"></span>
+            <span class="sr-only">暂停</span>
+          </button>
+          <div class="timeline-wrap is-single" id="timelineWrap">
+            <span id="timeLabel">00:00</span>
+            <div class="timeline-visual" id="timelineVisual" aria-hidden="true">
+              <div class="timeline-segments" id="timelineSegments"></div>
+              <div class="timeline-thumb" id="timelineThumb">
+                <i id="timelineThumbDot"></i>
+                <strong id="timelineSegmentLabel"></strong>
+              </div>
+            </div>
+            <input id="scrub" type="range" min="0" max="1" step="0.001" value="0" />
+            <output id="scrubOut">00:00</output>
+          </div>
+          <button id="exportActiveButton" class="export-active-button export-mp4" type="button">
+            <span class="download-mark"><span class="download-glyph" aria-hidden="true"></span></span>
+            <span id="exportActiveLabel" class="format-label"><span class="format-plain">MP4</span></span>
+          </button>
+          <div class="export-toggle-stack" aria-label="扩展控制">
+            <button id="exportMenuToggle" class="export-toggle-button" type="button" title="切换导出格式" aria-expanded="false">
+              <span class="toggle-arrow toggle-up" aria-hidden="true"></span>
+            </button>
+            <button id="timelineFxToggle" class="export-toggle-button" type="button" title="粒子动画控制" aria-expanded="false">
+              <span class="toggle-arrow toggle-down" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div id="exportMenu" class="export-menu" hidden>
+            <button id="exportWebglButton" class="export-menu-item export-webgl" data-format="webgl" type="button">
+              <span class="format-label"><span class="format-web-prefix">Web</span><span class="format-web-suffix gl">GL</span></span>
+            </button>
+            <button id="exportWebmButton" class="export-menu-item export-webm" data-format="webm" type="button">
+              <span class="format-label"><span class="format-web-prefix">Web</span><span class="format-web-suffix m">M</span></span>
+            </button>
+            <button id="exportMp4Button" class="export-menu-item export-mp4" data-format="mp4" type="button">
+              <span class="format-label"><span class="format-plain">MP4</span></span>
+            </button>
+            <button id="exportPngButton" class="export-menu-item export-png" data-format="png" type="button">
+              <span class="format-label"><span class="format-plain">PNG</span></span>
+            </button>
+          </div>
+          <a id="pngDownloadLink" class="technical-hidden" download="particle-frame.png"><span>PNG</span></a>
+          <a id="mp4DownloadLink" class="technical-hidden" download="particle-effect.mp4"><span>MP4</span></a>
+          <a id="webmDownloadLink" class="technical-hidden" download="particle-effect.webm"><span>WebM</span></a>
+        </div>
+
+        <div id="timelineFxPanel" class="timeline-fx-panel" aria-label="粒子动画控制" hidden>
+          <span class="fx-wave" aria-hidden="true"></span>
+          <div class="fx-track" id="timelineFxTrack">
+            <div class="fx-segments" id="timelineFxSegments"></div>
+            <span class="fx-ticks" aria-hidden="true"></span>
+          </div>
+          <span class="fx-percent">%</span>
+        </div>
+      </section>
+    </main>
+
+    <video id="sourceVideo" muted playsinline preload="metadata"></video>
+    <video id="sourceVideoB" muted playsinline preload="metadata"></video>
+    <script type="module" src="./src/main.js?v=20260614-upload-motion-fix"></script>
+  </body>
+</html>
