@@ -425,14 +425,19 @@ const material = new THREE.ShaderMaterial({
       depth = pow(clamp(depth, 0.0, 1.0), max(uDepthGamma, 0.001));
       depth = mix(depth, 1.0 - depth, step(0.5, uInvert));
 
+      float imageMode = step(0.5, uImageMode);
+      float staticMode = step(0.5, uStaticSource);
       float depthThreshold = mix(uThreshold, uThreshold * 0.86, uSourcePull);
-      float presence = smoothstep(depthThreshold + 0.035, 0.9, depth);
+      float depthLayerHint = smoothstep(0.025, 0.72, depth);
+      float depthPresence = smoothstep(depthThreshold * 0.72, 0.9, depth);
+      float fallbackPresence = smoothstep(depthThreshold * 0.24, 0.62, depth) * 0.54;
+      float presence = max(depthPresence, fallbackPresence * staticMode);
+      presence = max(presence, depthLayerHint * 0.18 * staticMode);
       float seedA = hash11(aSeed * 37.0 + 3.1);
       float seedB = hash11(aSeed * 19.0 + 11.7);
       float seedC = hash11(aSeed * 71.0 + 5.3);
-      float confidenceGate = step(seedC, clamp(presence * 1.24, 0.0, 1.0));
-      presence = pow(presence, 1.42) * confidenceGate;
-      float imageMode = step(0.5, uImageMode);
+      float confidenceGate = step(seedC, clamp(presence * 1.18 + staticMode * 0.18, 0.0, 1.0));
+      presence = pow(presence, 1.18) * mix(confidenceGate, 1.0, staticMode * 0.35);
 
       float holdDuration = max(uHoldDuration, 0.08);
       float assembleDuration = max(uAssembleDuration, 0.0);
@@ -445,7 +450,6 @@ const material = new THREE.ShaderMaterial({
       float dissolveStart = assembleDuration + holdDuration;
       float dissolveRaw = dissolveDuration <= 0.0001 ? step(dissolveStart, localTime) : (localTime - dissolveStart - particleLag * 0.35) / dissolveDuration;
       float dissolve = easeInOut(dissolveRaw);
-      float staticMode = step(0.5, uStaticSource);
       float visiblePhase = clamp(assemble * (1.0 - dissolve), 0.0, 1.0);
       visiblePhase = mix(visiblePhase, 1.0, staticMode);
       float explicitTransition = clamp(uTransitionBlend, 0.0, 1.0);
@@ -2273,6 +2277,14 @@ function generateDepthFrame(now, force = false) {
       minDepth = Math.min(minDepth, depth);
       maxDepth = Math.max(maxDepth, depth);
     }
+  }
+
+  if (!Number.isFinite(minDepth) || !Number.isFinite(maxDepth) || maxDepth < 0.0001 || maxDepth - minDepth < 0.0001) {
+    for (let index = 0; index < rawDepth.length; index += 1) {
+      rawDepth[index] = 0.72;
+    }
+    minDepth = 0;
+    maxDepth = 1;
   }
 
   const range = Math.max(0.0001, maxDepth - minDepth);
