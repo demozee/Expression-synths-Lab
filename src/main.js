@@ -473,7 +473,7 @@ const material = new THREE.ShaderMaterial({
       vec3 pos = vec3((aUv.x - 0.5) * uPlaneScale.x, (0.5 - aUv.y) * uPlaneScale.y, 0.0);
       float depthLayer = smoothstep(0.05, 0.96, depth);
       float portraitVolume = pow(depthLayer, 0.78);
-      float depthOffset = (portraitVolume - 0.5) * uDepthStrength * 1.28;
+      float depthOffset = (portraitVolume - 0.5) * uDepthStrength * 1.28 * mix(1.0, 1.58, imageMode);
       pos.z += depthOffset + (seedB - 0.5) * uDepthStrength * 0.11 * presence;
       pos.xy *= 1.0 + depthOffset * mix(0.018, 0.0, imageMode);
       pos.xy += vec2(-0.014, 0.01) * depthOffset * (1.0 - imageMode);
@@ -758,9 +758,9 @@ function fillDepthFallback(value = 0.72) {
     }
   }
   const backgroundLuma = sourceData ? contentEdgeLuma(luma, width, bounds) : 1;
-  let pivotWeight = 0;
-  let pivotX = 0;
-  let pivotZ = 0;
+  let minDepth = Number.POSITIVE_INFINITY;
+  let maxDepth = Number.NEGATIVE_INFINITY;
+  let validDepthCount = 0;
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -784,14 +784,44 @@ function fillDepthFallback(value = 0.72) {
         const ny = (y + 0.5 - (bounds.y0 + bounds.height * 0.48)) / Math.max(1, bounds.height * 0.58);
         const subjectPrior = Math.pow(clamp(1 - Math.hypot(nx * 0.84, ny * 1.08)), 1.9);
         const confidence = clamp(backgroundDelta * 2.2 + edge * 0.9 + saturation * 0.35 + subjectPrior * 0.2);
-        const mask = smoothstep(0.15, 0.58, confidence) * rectFade;
-        depth = mask * clamp(0.28 + subjectPrior * 0.36 + edge * 0.24 + backgroundDelta * 0.34) * clamp(value);
+        const mask = smoothstep(0.14, 0.56, confidence) * rectFade;
+        const relief = clamp(
+          Math.pow(backgroundDelta, 0.72) * 0.36 +
+            subjectPrior * 0.42 +
+            Math.pow(edge, 0.62) * 0.2 +
+            saturation * 0.12,
+        );
+        depth = mask > 0.018 ? mask * (0.16 + relief * 0.84) * clamp(value) : 0;
       } else if (rectFade > 0.0001 && !sourceData) {
-        depth = rectFade * clamp(value);
+        const nx = (x + 0.5 - (bounds.x0 + bounds.width * 0.5)) / Math.max(1, bounds.width * 0.5);
+        const ny = (y + 0.5 - (bounds.y0 + bounds.height * 0.48)) / Math.max(1, bounds.height * 0.58);
+        const subjectPrior = Math.pow(clamp(1 - Math.hypot(nx * 0.84, ny * 1.08)), 1.9);
+        depth = rectFade * (0.18 + subjectPrior * 0.82) * clamp(value);
       }
 
+      process.rawDepth[index] = depth;
+      if (depth > 0.018) {
+        minDepth = Math.min(minDepth, depth);
+        maxDepth = Math.max(maxDepth, depth);
+        validDepthCount += 1;
+      }
+    }
+  }
+
+  const range = Math.max(0.0001, maxDepth - minDepth);
+  let pivotWeight = 0;
+  let pivotX = 0;
+  let pivotZ = 0;
+
+  for (let index = 0; index < process.rawDepth.length; index += 1) {
+      let depth = process.rawDepth[index];
+      depth = validDepthCount > 8 && depth > 0 ? clamp((depth - minDepth) / range) : depth;
+      depth = depth > 0 ? smoothstep(0.02, 0.96, depth) : 0;
+      depth = depth > 0 ? clamp(0.18 + depth * 0.82) : 0;
       previousDepth[index] = depth;
+      const x = index % width;
       const preview = Math.round(Math.pow(clamp(depth), 0.74) * 255);
+      const p = index * 4;
       pixels[p] = preview;
       pixels[p + 1] = preview;
       pixels[p + 2] = preview;
@@ -804,7 +834,6 @@ function fillDepthFallback(value = 0.72) {
         pivotX += (((x + 0.5) / width) - 0.5) * mask;
         pivotZ += z * mask;
       }
-    }
   }
 
   if (activeClipIsImage() && pivotWeight > 1) {
@@ -2344,9 +2373,9 @@ function generateDepthFrame(now, force = false) {
   const mapContrast = mixNumber(0.92, 3.1, depthCurve);
   const localContrastScale = mixNumber(1, 1.34, depthCurve);
   const previewGamma = mixNumber(1.08, 0.46, depthCurve);
-  const centerX = width * 0.5;
-  const centerY = height * 0.48;
-  const maxDistance = Math.hypot(centerX, centerY);
+  const centerX = bounds.x0 + bounds.width * 0.5;
+  const centerY = bounds.y0 + bounds.height * 0.48;
+  const maxDistance = Math.hypot(bounds.width * 0.5, bounds.height * 0.52);
 
   for (let i = 0, p = 0; i < luma.length; i += 1, p += 4) {
     luma[i] = (sourcePixels[p] * 0.2126 + sourcePixels[p + 1] * 0.7152 + sourcePixels[p + 2] * 0.0722) / 255;
@@ -2356,6 +2385,7 @@ function generateDepthFrame(now, force = false) {
 
   let minDepth = Number.POSITIVE_INFINITY;
   let maxDepth = Number.NEGATIVE_INFINITY;
+  let validDepthCount = 0;
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -2363,10 +2393,9 @@ function generateDepthFrame(now, force = false) {
       const rectFade = contentFadeAt(x, y, bounds);
       if (rectFade <= 0.0001) {
         rawDepth[index] = 0;
-        minDepth = Math.min(minDepth, 0);
-        maxDepth = Math.max(maxDepth, 0);
         continue;
       }
+      const p = index * 4;
       const right = y * width + Math.min(width - 1, x + 1);
       const left = y * width + Math.max(0, x - 1);
       const down = Math.min(height - 1, y + 1) * width + x;
@@ -2383,31 +2412,40 @@ function generateDepthFrame(now, force = false) {
       const vertical = 1 - y / (height - 1);
       const floorPull = 0;
       const backgroundDelta = Math.abs(luma[index] - backgroundLuma);
+      const r = sourcePixels[p] / 255;
+      const g = sourcePixels[p + 1] / 255;
+      const b = sourcePixels[p + 2] / 255;
+      const saturation = Math.max(r, g, b) - Math.min(r, g, b);
       const foreground = clamp((backgroundDelta * 2.35 + localContrast * 0.16 * localContrastScale) * foregroundScale);
-      const nx = (x - centerX) / Math.max(1, width * 0.5);
-      const ny = (y - height * 0.44) / Math.max(1, height * 0.58);
+      const nx = (x - centerX) / Math.max(1, bounds.width * 0.5);
+      const ny = (y - (bounds.y0 + bounds.height * 0.44)) / Math.max(1, bounds.height * 0.58);
       const subjectOval = Math.pow(clamp(1 - Math.hypot(nx * 0.82, ny * 1.12)), 1.85);
       const shoulderBand = Math.pow(clamp(1 - Math.abs(y / Math.max(1, height - 1) - 0.62) / 0.32), 2.2) * clamp(1 - Math.abs(nx) * 0.7);
       const subjectRegion = Math.max(subjectOval, shoulderBand * 0.52);
       const subjectPrior = subjectRegion * (0.18 + foreground * 0.86 + localContrast * 0.12);
       const foregroundConfidence = clamp(foreground * 0.96 + localContrast * 0.2 + subjectRegion * 0.18);
-      const backgroundSuppression = smoothstep(0.16, 0.42, foregroundConfidence);
-      let depth =
+      const mask = smoothstep(0.1, 0.42, foregroundConfidence + Math.pow(edge, 0.8) * 0.18 + saturation * 0.08) * rectFade;
+      const relief = clamp(
         foreground * weights.luma +
-        localContrast * weights.local +
-        radial * weights.radial * (0.18 + foreground * 0.82) +
-        vertical * weights.vertical * foreground +
-        subjectPrior * subjectPriorScale +
-        Math.pow(edge, 0.62) * weights.edge * state.edgeLift * edgeScale +
-        floorPull;
-      depth *= backgroundSuppression * rectFade;
+          localContrast * weights.local +
+          radial * weights.radial * (0.18 + foreground * 0.82) +
+          vertical * weights.vertical * foreground +
+          subjectPrior * subjectPriorScale +
+          Math.pow(edge, 0.62) * weights.edge * state.edgeLift * edgeScale +
+          saturation * 0.14 +
+          floorPull,
+      );
+      const depth = mask > 0.018 ? mask * (0.16 + relief * 0.84) : 0;
       rawDepth[index] = depth;
-      minDepth = Math.min(minDepth, depth);
-      maxDepth = Math.max(maxDepth, depth);
+      if (depth > 0.018) {
+        minDepth = Math.min(minDepth, depth);
+        maxDepth = Math.max(maxDepth, depth);
+        validDepthCount += 1;
+      }
     }
   }
 
-  if (!Number.isFinite(minDepth) || !Number.isFinite(maxDepth) || maxDepth < 0.0001 || maxDepth - minDepth < 0.0001) {
+  if (!Number.isFinite(minDepth) || !Number.isFinite(maxDepth) || validDepthCount < 8 || maxDepth < 0.0001 || maxDepth - minDepth < 0.0001) {
     fillDepthFallback();
     return;
   }
@@ -2435,10 +2473,12 @@ function generateDepthFrame(now, force = false) {
   let pivotZ = 0;
 
   for (let index = 0; index < rawDepth.length; index += 1) {
-    let depth = clamp((rawDepth[index] - low) / normRange);
+    const hasDepth = rawDepth[index] > 0.018;
+    let depth = hasDepth ? clamp((rawDepth[index] - low) / normRange) : 0;
     depth = smoothstep(mixNumber(0.08, 0.035, depthCurve), mixNumber(0.92, 0.82, depthCurve), depth);
     depth = clamp((depth - 0.5) * weights.contrast * mapContrast + 0.5);
     depth = mix(depth, Math.pow(depth, mixNumber(1.08, 0.74, depthCurve)), depthCurve * 0.72);
+    depth = hasDepth && depth > 0 ? clamp(0.14 + depth * 0.86) : 0;
 
     const temporal = state.playing ? 0.58 : 0.18;
     depth = previousDepth[index] * temporal + depth * (1 - temporal);
