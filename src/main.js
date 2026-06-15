@@ -14,6 +14,15 @@ function setUploadStatus(message, tone = "muted") {
   ui.uploadStatus.classList.toggle("is-error", tone === "error");
 }
 
+function safeRun(label, callback) {
+  try {
+    return callback();
+  } catch (error) {
+    console.warn(`[${label}]`, error);
+    return null;
+  }
+}
+
 let THREE;
 try {
   THREE = await import(CDN_THREE);
@@ -220,6 +229,7 @@ const state = {
   imagePivotX: 0,
   imagePivotZ: 0,
   mediaAspect: 16 / 9,
+  renderErrorShown: false,
 };
 
 const mediaSlots = new Map(SLOT_IDS.map((slot) => [slot, createEmptyMediaSlot(slot)]));
@@ -680,6 +690,26 @@ function resetDepthMemory({ clearPrevious = false } = {}) {
   if (clearPrevious) {
     process.previousDepth.fill(0);
   }
+}
+
+function fillDepthFallback(value = 0.72) {
+  const depthValue = Math.round(clamp(value) * 255);
+  const pixels = process.depthPixels?.data;
+  if (pixels) {
+    for (let index = 0; index < pixels.length; index += 4) {
+      pixels[index] = depthValue;
+      pixels[index + 1] = depthValue;
+      pixels[index + 2] = depthValue;
+      pixels[index + 3] = 255;
+    }
+    process.depthCtx.putImageData(process.depthPixels, 0, 0);
+  } else {
+    process.depthCtx.fillStyle = `rgb(${depthValue}, ${depthValue}, ${depthValue})`;
+    process.depthCtx.fillRect(0, 0, process.width, process.height);
+  }
+  process.previousDepth.fill(value);
+  depthTexture.needsUpdate = true;
+  ui.depthMeter.textContent = `${process.width} x ${process.height}`;
 }
 
 function configureProcessSize(aspect = 16 / 9) {
@@ -2028,10 +2058,11 @@ async function resumePlaybackAfterUpload(slot) {
   }
 
   setPlaying(true);
-  syncSequencePlayback();
-  drawSourceFrame(performance.now());
-  generateDepthFrame(performance.now(), true);
-  extractOriginalPalette();
+  safeRun("sync playback after upload", syncSequencePlayback);
+  safeRun("draw uploaded frame", () => drawSourceFrame(performance.now()));
+  safeRun("seed uploaded depth", () => fillDepthFallback());
+  safeRun("generate uploaded depth", () => generateDepthFrame(performance.now(), true));
+  safeRun("extract uploaded palette", extractOriginalPalette);
   updateColorControls();
   updateUniforms();
   updateHud();
@@ -2412,39 +2443,48 @@ function updateHud() {
 }
 
 function animate(now) {
-  const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
-  lastFrameTime = now;
+  try {
+    const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
+    lastFrameTime = now;
 
-  if (state.playing && state.autoPlay) {
-    state.elapsed = (state.elapsed + dt) % state.duration;
+    if (state.playing && state.autoPlay) {
+      state.elapsed = (state.elapsed + dt) % state.duration;
+    }
+
+    if (state.sourceMode === "sequence") {
+      const segment = getSequenceSegment(state.elapsed);
+      const clip = getClip(segment.slot);
+      state.rotation = clip.type === "image" ? imageRotationAtTime(segment.localTime) : 0;
+    } else if (state.sourceMode === "image") {
+      state.rotation = imageRotationAtTime(state.elapsed);
+    }
+
+    syncSequencePlayback();
+
+    safeRun("draw source frame", () => drawSourceFrame(now));
+    safeRun("generate depth frame", () => generateDepthFrame(now));
+    updateUniforms();
+    updateHud();
+
+    if (points) {
+      points.visible = state.sourceMode !== "empty";
+      const imageLike = activeClipIsImage();
+      points.rotation.x = imageLike || state.sourceMode === "empty" ? 0 : -0.045;
+      points.rotation.y = imageLike || state.sourceMode === "empty" ? 0 : 0.055;
+      points.rotation.z = 0;
+    }
+
+    applyRenderBackground();
+    renderer.render(scene, camera);
+    updateFps(now);
+    state.renderErrorShown = false;
+  } catch (error) {
+    if (!state.renderErrorShown) {
+      state.renderErrorShown = true;
+      console.error("[render loop]", error);
+      showMessage("预览渲染遇到异常，正在自动恢复。请刷新页面或重新上传素材。");
+    }
   }
-
-  if (state.sourceMode === "sequence") {
-    const segment = getSequenceSegment(state.elapsed);
-    const clip = getClip(segment.slot);
-    state.rotation = clip.type === "image" ? imageRotationAtTime(segment.localTime) : 0;
-  } else if (state.sourceMode === "image") {
-    state.rotation = imageRotationAtTime(state.elapsed);
-  }
-
-  syncSequencePlayback();
-
-  drawSourceFrame(now);
-  generateDepthFrame(now);
-  updateUniforms();
-  updateHud();
-
-  if (points) {
-    points.visible = state.sourceMode !== "empty";
-    const imageLike = activeClipIsImage();
-    points.rotation.x = imageLike || state.sourceMode === "empty" ? 0 : -0.045;
-    points.rotation.y = imageLike || state.sourceMode === "empty" ? 0 : 0.055;
-    points.rotation.z = 0;
-  }
-
-  applyRenderBackground();
-  renderer.render(scene, camera);
-  updateFps(now);
   requestAnimationFrame(animate);
 }
 
@@ -2800,18 +2840,23 @@ async function loadImageFile(file, slot = activeUploadSlot(), { deferPlay = fals
   resetDepthMemory({ clearPrevious: true });
   const count = mediaClipCount();
   focusTimelineOnSlot(targetSlot);
+  updateSlotUI();
+  updateSequenceStatus();
+  drawSourceFrame(performance.now());
+  fillDepthFallback();
+  buildGeometry();
+  updateUniforms();
+  updateHud();
+  updateColorControls();
   setUploadStatus(
     count > 1
       ? `第 ${slotNumber(targetSlot)} 段图片已载入：当前 ${count}/5 段，已启用拼接时间线`
       : "图片已载入：已生成正面粒子图，可导出单帧或旋转视频",
     "ready",
   );
-  drawSourceFrame(performance.now());
-  generateDepthFrame(performance.now(), true);
-  extractOriginalPalette();
-  updateSequenceStatus();
-  syncTimelineFxPanel();
-  updateSlotUI();
+  safeRun("generate image depth", () => generateDepthFrame(performance.now(), true));
+  safeRun("extract image palette", extractOriginalPalette);
+  safeRun("sync image timeline controls", syncTimelineFxPanel);
   updateColorControls();
   if (!deferPlay) await resumePlaybackAfterUpload(targetSlot);
 }
@@ -2873,13 +2918,18 @@ async function loadVideoFile(file, slot = activeUploadSlot(), { deferPlay = fals
   state.imagePivotX = 0;
   state.imagePivotZ = 0;
   resetDepthMemory({ clearPrevious: true });
-  updateSequenceStatus();
   focusTimelineOnSlot(targetSlot);
-  drawSourceFrame(performance.now());
-  generateDepthFrame(performance.now(), true);
-  extractOriginalPalette();
-  syncTimelineFxPanel();
   updateSlotUI();
+  updateSequenceStatus();
+  drawSourceFrame(performance.now());
+  fillDepthFallback();
+  buildGeometry();
+  updateUniforms();
+  updateHud();
+  updateColorControls();
+  safeRun("generate video depth", () => generateDepthFrame(performance.now(), true));
+  safeRun("extract video palette", extractOriginalPalette);
+  safeRun("sync video timeline controls", syncTimelineFxPanel);
   updateColorControls();
 
   if (deferPlay || state.sourceMode === "empty") return;
