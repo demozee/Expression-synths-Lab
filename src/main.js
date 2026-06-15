@@ -692,22 +692,127 @@ function resetDepthMemory({ clearPrevious = false } = {}) {
   }
 }
 
-function fillDepthFallback(value = 0.72) {
-  const depthValue = Math.round(clamp(value) * 255);
-  const pixels = process.depthPixels?.data;
-  if (pixels) {
-    for (let index = 0; index < pixels.length; index += 4) {
-      pixels[index] = depthValue;
-      pixels[index + 1] = depthValue;
-      pixels[index + 2] = depthValue;
-      pixels[index + 3] = 255;
-    }
-    process.depthCtx.putImageData(process.depthPixels, 0, 0);
-  } else {
-    process.depthCtx.fillStyle = `rgb(${depthValue}, ${depthValue}, ${depthValue})`;
-    process.depthCtx.fillRect(0, 0, process.width, process.height);
+function sourceContentBounds() {
+  const rect = process.sourceContentRect || { x: 0, y: 0, width: process.width, height: process.height };
+  const x0 = Math.max(0, Math.min(process.width - 1, Math.floor(rect.x)));
+  const y0 = Math.max(0, Math.min(process.height - 1, Math.floor(rect.y)));
+  const x1 = Math.max(x0 + 1, Math.min(process.width, Math.ceil(rect.x + rect.width)));
+  const y1 = Math.max(y0 + 1, Math.min(process.height, Math.ceil(rect.y + rect.height)));
+  return {
+    x0,
+    y0,
+    x1,
+    y1,
+    width: x1 - x0,
+    height: y1 - y0,
+    fadeX: Math.max(1, (x1 - x0) * 0.025),
+    fadeY: Math.max(1, (y1 - y0) * 0.025),
+  };
+}
+
+function contentFadeAt(x, y, bounds = sourceContentBounds()) {
+  const px = x + 0.5;
+  const py = y + 0.5;
+  return (
+    smoothstep(0, bounds.fadeX, px - bounds.x0) *
+    smoothstep(0, bounds.fadeX, bounds.x1 - px) *
+    smoothstep(0, bounds.fadeY, py - bounds.y0) *
+    smoothstep(0, bounds.fadeY, bounds.y1 - py)
+  );
+}
+
+function contentEdgeLuma(luma, width, bounds = sourceContentBounds()) {
+  let total = 0;
+  let count = 0;
+  const stepX = Math.max(1, Math.floor(bounds.width / 160));
+  const stepY = Math.max(1, Math.floor(bounds.height / 160));
+
+  for (let x = bounds.x0; x < bounds.x1; x += stepX) {
+    total += luma[bounds.y0 * width + x] + luma[(bounds.y1 - 1) * width + x];
+    count += 2;
   }
-  process.previousDepth.fill(value);
+  for (let y = bounds.y0; y < bounds.y1; y += stepY) {
+    total += luma[y * width + bounds.x0] + luma[y * width + bounds.x1 - 1];
+    count += 2;
+  }
+
+  return total / Math.max(1, count);
+}
+
+function fillDepthFallback(value = 0.72) {
+  const { width, height, sourceCtx, luma, previousDepth } = process;
+  const pixels = process.depthPixels?.data;
+  if (!pixels) return;
+
+  let sourceData = null;
+  try {
+    sourceData = sourceCtx.getImageData(0, 0, width, height).data;
+  } catch {
+    sourceData = null;
+  }
+
+  const bounds = sourceContentBounds();
+  if (sourceData) {
+    for (let i = 0, p = 0; i < luma.length; i += 1, p += 4) {
+      luma[i] = (sourceData[p] * 0.2126 + sourceData[p + 1] * 0.7152 + sourceData[p + 2] * 0.0722) / 255;
+    }
+  }
+  const backgroundLuma = sourceData ? contentEdgeLuma(luma, width, bounds) : 1;
+  let pivotWeight = 0;
+  let pivotX = 0;
+  let pivotZ = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const p = index * 4;
+      const rectFade = contentFadeAt(x, y, bounds);
+      let depth = 0;
+
+      if (rectFade > 0.0001 && sourceData) {
+        const right = y * width + Math.min(width - 1, x + 1);
+        const left = y * width + Math.max(0, x - 1);
+        const down = Math.min(height - 1, y + 1) * width + x;
+        const up = Math.max(0, y - 1) * width + x;
+        const edge = Math.min(1, Math.abs(luma[right] - luma[left]) * 5.4 + Math.abs(luma[down] - luma[up]) * 5.4);
+        const r = sourceData[p] / 255;
+        const g = sourceData[p + 1] / 255;
+        const b = sourceData[p + 2] / 255;
+        const saturation = Math.max(r, g, b) - Math.min(r, g, b);
+        const backgroundDelta = Math.abs(luma[index] - backgroundLuma);
+        const nx = (x + 0.5 - (bounds.x0 + bounds.width * 0.5)) / Math.max(1, bounds.width * 0.5);
+        const ny = (y + 0.5 - (bounds.y0 + bounds.height * 0.48)) / Math.max(1, bounds.height * 0.58);
+        const subjectPrior = Math.pow(clamp(1 - Math.hypot(nx * 0.84, ny * 1.08)), 1.9);
+        const confidence = clamp(backgroundDelta * 2.2 + edge * 0.9 + saturation * 0.35 + subjectPrior * 0.2);
+        const mask = smoothstep(0.15, 0.58, confidence) * rectFade;
+        depth = mask * clamp(0.28 + subjectPrior * 0.36 + edge * 0.24 + backgroundDelta * 0.34) * clamp(value);
+      } else if (rectFade > 0.0001 && !sourceData) {
+        depth = rectFade * clamp(value);
+      }
+
+      previousDepth[index] = depth;
+      const preview = Math.round(Math.pow(clamp(depth), 0.74) * 255);
+      pixels[p] = preview;
+      pixels[p + 1] = preview;
+      pixels[p + 2] = preview;
+      pixels[p + 3] = 255;
+
+      if (activeClipIsImage() && depth > 0.025) {
+        const mask = depth;
+        const z = (smoothstep(0.04, 0.9, depth) - 0.5) * (depthStrengthValue() * 0.86) * 1.38;
+        pivotWeight += mask;
+        pivotX += (((x + 0.5) / width) - 0.5) * mask;
+        pivotZ += z * mask;
+      }
+    }
+  }
+
+  if (activeClipIsImage() && pivotWeight > 1) {
+    state.imagePivotX = clamp(pivotX / pivotWeight, -0.5, 0.5);
+    state.imagePivotZ = clamp(pivotZ / pivotWeight, -1.5, 1.5);
+  }
+
+  process.depthCtx.putImageData(process.depthPixels, 0, 0);
   depthTexture.needsUpdate = true;
   ui.depthMeter.textContent = `${process.width} x ${process.height}`;
 }
@@ -2229,6 +2334,7 @@ function generateDepthFrame(now, force = false) {
   }
   const sourcePixels = sourceData.data;
   const output = depthPixels.data;
+  const bounds = sourceContentBounds();
   const depthAmount = depthStrengthAmount();
   const weights = getRecipeWeights("balanced");
   const depthCurve = smoothstep(0, 1, depthAmount);
@@ -2246,17 +2352,7 @@ function generateDepthFrame(now, force = false) {
     luma[i] = (sourcePixels[p] * 0.2126 + sourcePixels[p + 1] * 0.7152 + sourcePixels[p + 2] * 0.0722) / 255;
   }
 
-  let borderTotal = 0;
-  let borderCount = 0;
-  for (let x = 0; x < width; x += 1) {
-    borderTotal += luma[x] + luma[(height - 1) * width + x];
-    borderCount += 2;
-  }
-  for (let y = 1; y < height - 1; y += 1) {
-    borderTotal += luma[y * width] + luma[y * width + width - 1];
-    borderCount += 2;
-  }
-  const backgroundLuma = borderTotal / Math.max(1, borderCount);
+  const backgroundLuma = contentEdgeLuma(luma, width, bounds);
 
   let minDepth = Number.POSITIVE_INFINITY;
   let maxDepth = Number.NEGATIVE_INFINITY;
@@ -2264,6 +2360,13 @@ function generateDepthFrame(now, force = false) {
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const index = y * width + x;
+      const rectFade = contentFadeAt(x, y, bounds);
+      if (rectFade <= 0.0001) {
+        rawDepth[index] = 0;
+        minDepth = Math.min(minDepth, 0);
+        maxDepth = Math.max(maxDepth, 0);
+        continue;
+      }
       const right = y * width + Math.min(width - 1, x + 1);
       const left = y * width + Math.max(0, x - 1);
       const down = Math.min(height - 1, y + 1) * width + x;
@@ -2289,12 +2392,6 @@ function generateDepthFrame(now, force = false) {
       const subjectPrior = subjectRegion * (0.18 + foreground * 0.86 + localContrast * 0.12);
       const foregroundConfidence = clamp(foreground * 0.96 + localContrast * 0.2 + subjectRegion * 0.18);
       const backgroundSuppression = smoothstep(0.16, 0.42, foregroundConfidence);
-      const frameFade =
-        smoothstep(0, width * 0.035, x) *
-        smoothstep(0, width * 0.035, width - 1 - x) *
-        smoothstep(0, height * 0.035, y) *
-        smoothstep(0, height * 0.035, height - 1 - y);
-
       let depth =
         foreground * weights.luma +
         localContrast * weights.local +
@@ -2303,7 +2400,7 @@ function generateDepthFrame(now, force = false) {
         subjectPrior * subjectPriorScale +
         Math.pow(edge, 0.62) * weights.edge * state.edgeLift * edgeScale +
         floorPull;
-      depth *= backgroundSuppression * frameFade;
+      depth *= backgroundSuppression * rectFade;
       rawDepth[index] = depth;
       minDepth = Math.min(minDepth, depth);
       maxDepth = Math.max(maxDepth, depth);
@@ -2311,11 +2408,8 @@ function generateDepthFrame(now, force = false) {
   }
 
   if (!Number.isFinite(minDepth) || !Number.isFinite(maxDepth) || maxDepth < 0.0001 || maxDepth - minDepth < 0.0001) {
-    for (let index = 0; index < rawDepth.length; index += 1) {
-      rawDepth[index] = 0.72;
-    }
-    minDepth = 0;
-    maxDepth = 1;
+    fillDepthFallback();
+    return;
   }
 
   const range = Math.max(0.0001, maxDepth - minDepth);
